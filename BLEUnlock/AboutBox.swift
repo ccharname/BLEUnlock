@@ -4,6 +4,7 @@ private var aboutBox: AboutBox? = nil
 
 class AboutBox: NSWindowController, NSWindowDelegate {
     @IBOutlet weak var versionLabel: NSTextField!
+    private var didNotifyOpen = false
 
     @IBAction func visitHomepage(_ sender: Any) {
         NSWorkspace.shared.open(URL(string: "https://github.com/Skyearn/BLEUnlock#readme")!)
@@ -18,6 +19,7 @@ class AboutBox: NSWindowController, NSWindowDelegate {
 
     override func windowDidLoad() {
         super.windowDidLoad()
+        window?.delegate = self
         if let info = Bundle.main.infoDictionary {
             if let version = info["CFBundleShortVersionString"] as? String {
                 if let build = info["CFBundleVersion"] as? String {
@@ -31,12 +33,23 @@ class AboutBox: NSWindowController, NSWindowDelegate {
         close()
     }
 
+    func windowWillClose(_ notification: Notification) {
+        if didNotifyOpen {
+            didNotifyOpen = false
+            (NSApp.delegate as? AppDelegate)?.aboutBoxWillClose()
+        }
+    }
+
     static func showAboutBox() {
         if (aboutBox == nil) {
             aboutBox = AboutBox()
         }
-        aboutBox?.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        aboutBox?.window?.orderFront(self)
+        guard let box = aboutBox else { return }
+        if !box.didNotifyOpen {
+            box.didNotifyOpen = true
+            (NSApp.delegate as? AppDelegate)?.aboutBoxDidOpen()
+        }
+        box.showWindow(nil)
+        box.window?.orderFront(self)
     }
 }

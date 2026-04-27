@@ -168,6 +168,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
     var wakeUnlockTimer: Timer?
     var postUnlockRetryTimer: Timer?
     var permissionRecoveryTimer: Timer?
+    private var activationPolicyWorkItem: DispatchWorkItem?
+    private var foregroundUIDepth = 0
     var lastWakeAt = 0.0
     var lastDisplayWakeRequestAt = 0.0
     var lastSystemSleepStartedAt = 0.0
@@ -1041,7 +1043,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         systemWakeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false, block: { _ in
             self.systemWakeTimer = nil
             print("delayed system wake job")
-            NSApp.setActivationPolicy(.accessory) // Hide Dock icon again
+            self.setActivationPolicyDebounced(.accessory) // Hide Dock icon again
             self.systemSleep = false
             self.ble.resumeMonitoringAfterSystemWake()
             self.lastWakeAt = Date().timeIntervalSince1970
@@ -1118,13 +1120,63 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         refreshMonitorStatusItems()
     }
 
+    // MARK: - Dock icon activation policy
+    //
+    // BLEUnlock cannot ship with LSUIElement=true (CBCentralManager.scanForPeripherals
+    // requires a .regular policy at first launch). Instead the app starts as .regular
+    // and switches to .accessory once initialization completes. On macOS 26 a single
+    // unbalanced setActivationPolicy can leave the Dock icon stuck visible. We debounce
+    // every transition and explicitly bracket UI that needs the foreground.
+
+    private func setActivationPolicyDebounced(_ policy: NSApplication.ActivationPolicy) {
+        activationPolicyWorkItem?.cancel()
+        let workItem = DispatchWorkItem {
+            NSApp.setActivationPolicy(policy)
+            if policy == .regular {
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                NSApp.deactivate()
+            }
+        }
+        activationPolicyWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+    }
+
+    private func enterForegroundUI() {
+        foregroundUIDepth += 1
+        activationPolicyWorkItem?.cancel()
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func leaveForegroundUI() {
+        foregroundUIDepth = max(0, foregroundUIDepth - 1)
+        guard foregroundUIDepth == 0 else { return }
+        setActivationPolicyDebounced(.accessory)
+    }
+
+    func presentForegroundUI<T>(_ block: () -> T) -> T {
+        enterForegroundUI()
+        defer { leaveForegroundUI() }
+        return block()
+    }
+
+    func aboutBoxDidOpen() {
+        enterForegroundUI()
+    }
+
+    func aboutBoxWillClose() {
+        leaveForegroundUI()
+    }
+
     func errorModal(_ msg: String, info: String? = nil) {
         let alert = NSAlert()
         alert.messageText = msg
         alert.informativeText = info ?? ""
         alert.window.title = "BLEUnlock"
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        presentForegroundUI {
+            _ = alert.runModal()
+        }
     }
 
     func showPauseNowPlayingNoticeIfNeeded() {
@@ -1140,8 +1192,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         """
         alert.window.title = "BLEUnlock"
         alert.addButton(withTitle: t("ok"))
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        presentForegroundUI {
+            _ = alert.runModal()
+        }
 
         prefs.set(true, forKey: pauseNowPlayingNoticeShownKey)
     }
@@ -1206,15 +1259,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         let txt = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 20))
         msg.accessoryView = txt
         txt.becomeFirstResponder()
-        NSApp.activate(ignoringOtherApps: true)
-        let response = msg.runModal()
-        
+        let response = presentForegroundUI { msg.runModal() }
+
         if (response == .alertFirstButtonReturn) {
             let pw = txt.stringValue
             storePassword(pw)
         }
     }
-    
+
     @objc func setRSSIThreshold() {
         let msg = NSAlert()
         msg.addButton(withTitle: t("ok"))
@@ -1227,9 +1279,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         txt.placeholderString = String(ble.thresholdRSSI)
         msg.accessoryView = txt
         txt.becomeFirstResponder()
-        NSApp.activate(ignoringOtherApps: true)
-        let response = msg.runModal()
-        
+        let response = presentForegroundUI { msg.runModal() }
+
         if (response == .alertFirstButtonReturn) {
             let val = txt.intValue
             ble.thresholdRSSI = Int(val)
@@ -1691,7 +1742,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         // Hide dock icon.
         // This is required because we can't have LSUIElement set to true in Info.plist,
         // otherwise CBCentralManager.scanForPeripherals won't work.
-        NSApp.setActivationPolicy(.accessory)
+        // On macOS 26 a synchronous switch right at finishLaunching can race with
+        // window setup and leave the Dock icon stuck visible — use the debounced helper
+        // so it settles after the first runloop turn.
+        setActivationPolicyDebounced(.accessory)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
