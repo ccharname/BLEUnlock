@@ -1043,7 +1043,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         systemWakeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false, block: { _ in
             self.systemWakeTimer = nil
             print("delayed system wake job")
-            self.setActivationPolicyDebounced(.accessory) // Hide Dock icon again
+            if self.foregroundUIDepth == 0 {
+                self.setActivationPolicyDebounced(.accessory) // Hide Dock icon again
+            }
             self.systemSleep = false
             self.ble.resumeMonitoringAfterSystemWake()
             self.lastWakeAt = Date().timeIntervalSince1970
@@ -1060,6 +1062,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         // Set activation policy to regular, so the CBCentralManager can scan for peripherals
         // when the Bluetooth will become on again.
         // This enables Dock icon but the screen is off anyway.
+        // Cancel any pending debounced .accessory so it can't fire mid-sleep and undo this.
+        activationPolicyWorkItem?.cancel()
         NSApp.setActivationPolicy(.regular)
     }
 
@@ -1128,12 +1132,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
     // unbalanced setActivationPolicy can leave the Dock icon stuck visible. We debounce
     // every transition and explicitly bracket UI that needs the foreground.
 
+    private func activateApp() {
+        if #available(macOS 14, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     private func setActivationPolicyDebounced(_ policy: NSApplication.ActivationPolicy) {
         activationPolicyWorkItem?.cancel()
-        let workItem = DispatchWorkItem {
+        let workItem = DispatchWorkItem { [weak self] in
             NSApp.setActivationPolicy(policy)
             if policy == .regular {
-                NSApp.activate(ignoringOtherApps: true)
+                self?.activateApp()
             } else {
                 NSApp.deactivate()
             }
@@ -1146,7 +1158,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         foregroundUIDepth += 1
         activationPolicyWorkItem?.cancel()
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
     }
 
     private func leaveForegroundUI() {
