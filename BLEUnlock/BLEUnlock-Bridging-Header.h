@@ -3,5 +3,4 @@
 //
 
 #include "lowlevel.h"
-#include "MediaRemote.h"
 #include "AppleEventsAccess.h"

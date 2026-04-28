@@ -311,6 +311,7 @@ class BLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var lastAuthorizationRefreshAt = 0.0
     let minimumAuthorizationRefreshInterval = 2.0
     var monitoringSuspended = false
+    private var currentScanAllowsDuplicates: Bool?
 
     var needsPermissionRecovery: Bool {
         guard scanMode || !monitoredUUIDs.isEmpty else { return false }
@@ -333,16 +334,49 @@ class BLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         guard now - lastAuthorizationRefreshAt >= minimumAuthorizationRefreshInterval else { return }
         lastAuthorizationRefreshAt = now
         print("Refreshing Bluetooth authorization state")
-        centralMgr.stopScan()
+        stopCurrentScan()
         centralMgr.delegate = nil
         centralMgr = CBCentralManager(delegate: self, queue: nil)
     }
 
+    private func hasActiveMonitoredConnection() -> Bool {
+        monitoredStates.values.contains(where: { $0.active })
+    }
+
+    private func shouldContinuePassiveMonitoringScan() -> Bool {
+        !monitoredUUIDs.isEmpty && !hasActiveMonitoredConnection()
+    }
+
+    private func shouldScanForPeripherals() -> Bool {
+        scanMode || shouldContinuePassiveMonitoringScan()
+    }
+
+    private func shouldAllowDuplicateScan() -> Bool {
+        shouldContinuePassiveMonitoringScan()
+    }
+
+    private func stopCurrentScan() {
+        centralMgr.stopScan()
+        currentScanAllowsDuplicates = nil
+    }
+
     func scanForPeripherals() {
         guard !monitoringSuspended else { return }
-        guard !centralMgr.isScanning else { return }
         guard centralMgr.state == .poweredOn else { return }
-        centralMgr.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        guard shouldScanForPeripherals() else {
+            stopCurrentScan()
+            return
+        }
+
+        let allowDuplicates = shouldAllowDuplicateScan()
+        if centralMgr.isScanning {
+            guard currentScanAllowsDuplicates != allowDuplicates else { return }
+            stopCurrentScan()
+        }
+
+        let options: [String: Any]? = allowDuplicates ? [CBCentralManagerScanOptionAllowDuplicatesKey: true] : nil
+        centralMgr.scanForPeripherals(withServices: nil, options: options)
+        currentScanAllowsDuplicates = allowDuplicates
         //print("Start scanning")
     }
 
@@ -353,8 +387,10 @@ class BLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func stopScanning() {
         scanMode = false
-        if monitoredStates.values.contains(where: { $0.active }) {
-            centralMgr.stopScan()
+        if shouldContinuePassiveMonitoringScan() {
+            scanForPeripherals()
+        } else {
+            stopCurrentScan()
         }
     }
 
@@ -377,7 +413,7 @@ class BLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func suspendMonitoringForSystemSleep() {
         guard !monitoringSuspended else { return }
         monitoringSuspended = true
-        centralMgr.stopScan()
+        stopCurrentScan()
 
         for state in monitoredStates.values {
             state.invalidateTimers()
@@ -534,13 +570,14 @@ class BLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         case .poweredOn:
             print("Bluetooth powered on")
             lastAuthorizationRefreshAt = 0
-            if !monitoringSuspended && !monitoredStates.values.contains(where: { $0.active }) {
+            if !monitoringSuspended && !hasActiveMonitoredConnection() {
                 scanForPeripherals()
             }
             powerWarn = false
         case .poweredOff:
             print("Bluetooth powered off")
             lastAuthorizationRefreshAt = 0
+            currentScanAllowsDuplicates = nil
             for state in monitoredStates.values {
                 state.invalidateTimers()
                 state.lastRSSI = nil
@@ -741,8 +778,10 @@ class BLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
         if state.activeModeTimer == nil && !passiveMode {
             print("Entering active mode for \(state.uuid)")
-            if !scanMode {
-                centralMgr.stopScan()
+            if scanMode {
+                scanForPeripherals()
+            } else {
+                stopCurrentScan()
             }
             state.activeModeTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true, block: { _ in
                 if Date().timeIntervalSince1970 > state.lastReadAt + 10 {

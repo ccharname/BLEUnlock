@@ -848,12 +848,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         }
     }
 
+    @discardableResult
+    func startScreenSaver() -> Bool {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Library/CoreServices/ScreenSaverEngine.app"))
+    }
+
     func lockOrSaveScreen() {
         if prefs.bool(forKey: "screensaver") {
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Library/CoreServices/ScreenSaverEngine.app"))
+            startScreenSaver()
         } else {
-            if SACLockScreenImmediate() != 0 {
-                print("Failed to lock screen")
+            if lockScreenImmediate() != 0 {
+                print("Failed to lock screen, starting screensaver instead")
+                startScreenSaver()
             }
             if prefs.bool(forKey: "sleepDisplay") {
                 print("sleep display")
@@ -1612,9 +1618,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         if #available(macOS 13.0, *) {
             let service = SMAppService.loginItem(identifier: launcherBundleIdentifier())
             switch service.status {
-            case .enabled, .requiresApproval:
+            case .enabled:
                 return true
-            case .notRegistered, .notFound:
+            case .requiresApproval, .notRegistered, .notFound:
                 return false
             @unknown default:
                 return prefs.bool(forKey: "launchAtLogin")
@@ -1630,12 +1636,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
             let service = SMAppService.loginItem(identifier: launcherBundleIdentifier())
             do {
                 if enabled {
-                    try service.register()
-                    if service.status == .requiresApproval && showErrors {
-                        errorModal("BLEUnlock needs approval in Login Items.",
-                                   info: "Open System Settings > General > Login Items and allow BLEUnlock.")
+                    switch service.status {
+                    case .enabled:
+                        return true
+                    case .requiresApproval:
+                        if showErrors {
+                            errorModal("BLEUnlock needs approval in Login Items.",
+                                       info: "Open System Settings > General > Login Items and allow BLEUnlock.")
+                            SMAppService.openSystemSettingsLoginItems()
+                        } else {
+                            print("Launch at Login requires approval in System Settings")
+                        }
+                        return false
+                    case .notRegistered, .notFound:
+                        try service.register()
+                        if service.status == .requiresApproval {
+                            if showErrors {
+                                errorModal("BLEUnlock needs approval in Login Items.",
+                                           info: "Open System Settings > General > Login Items and allow BLEUnlock.")
+                                SMAppService.openSystemSettingsLoginItems()
+                            } else {
+                                print("Launch at Login requires approval in System Settings")
+                            }
+                            return false
+                        }
+                        return service.status == .enabled
+                    @unknown default:
+                        break
                     }
                 } else {
+                    if service.status == .notRegistered || service.status == .notFound {
+                        return true
+                    }
                     try service.unregister()
                 }
                 return true

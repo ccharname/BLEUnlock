@@ -4,6 +4,6 @@
 
 void sleepDisplay(void);
 void wakeDisplay(void);
-int SACLockScreenImmediate(void);
+int lockScreenImmediate(void);
 
 #endif /* lowlevel_h */

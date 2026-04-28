@@ -1,4 +1,5 @@
 #include "lowlevel.h"
+#include <dlfcn.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/IOKitLib.h>
 
@@ -32,4 +33,24 @@ void sleepDisplay(void)
         IORegistryEntrySetCFProperty(reg, CFSTR("IORequestIdle"), kCFBooleanTrue);
         IOObjectRelease(reg);
     }
+}
+
+int lockScreenImmediate(void)
+{
+    typedef int (*SACLockScreenImmediateFunction)(void);
+    static SACLockScreenImmediateFunction lockScreen = NULL;
+    static bool didLookup = false;
+
+    if (!didLookup) {
+        didLookup = true;
+        void *handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_LAZY);
+        if (handle) {
+            lockScreen = (SACLockScreenImmediateFunction)dlsym(handle, "SACLockScreenImmediate");
+        }
+    }
+
+    if (!lockScreen) {
+        return -1;
+    }
+    return lockScreen();
 }

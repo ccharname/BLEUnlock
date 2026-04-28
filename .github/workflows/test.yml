@@ -16,3 +16,39 @@ jobs:
     - uses: actions/checkout@master
     - name: Start xcodebuild test
       run: xcodebuild clean build -project BLEUnlock.xcodeproj -scheme BLEUnlock CODE_SIGNING_ALLOWED=NO
+    - name: Verify app stays LSUIElement
+      run: |
+        set -euo pipefail
+
+        assert_lsui_element() {
+          local plist="$1"
+          local value
+
+          if [ ! -f "$plist" ]; then
+            echo "Missing Info.plist: $plist" >&2
+            exit 1
+          fi
+
+          if ! value="$(plutil -extract LSUIElement raw -o - "$plist" 2>/dev/null)"; then
+            echo "Missing LSUIElement in $plist" >&2
+            exit 1
+          fi
+
+          if [ "$value" != "true" ]; then
+            echo "Expected LSUIElement=true in $plist, got: $value" >&2
+            exit 1
+          fi
+        }
+
+        assert_lsui_element "BLEUnlock/Info.plist"
+
+        build_settings="$(xcodebuild -project BLEUnlock.xcodeproj -scheme BLEUnlock -showBuildSettings CODE_SIGNING_ALLOWED=NO)"
+        built_products_dir="$(printf '%s\n' "$build_settings" | awk -F' = ' '/^[[:space:]]*BUILT_PRODUCTS_DIR = / && !seen { print $2; seen = 1 }')"
+        full_product_name="$(printf '%s\n' "$build_settings" | awk -F' = ' '/^[[:space:]]*FULL_PRODUCT_NAME = / && !seen { print $2; seen = 1 }')"
+
+        if [ -z "$built_products_dir" ] || [ -z "$full_product_name" ]; then
+          echo "Unable to resolve built app path from xcodebuild settings" >&2
+          exit 1
+        fi
+
+        assert_lsui_element "$built_products_dir/$full_product_name/Contents/Info.plist"
