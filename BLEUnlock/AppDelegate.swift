@@ -1044,7 +1044,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
             self.systemWakeTimer = nil
             print("delayed system wake job")
             if self.foregroundUIDepth == 0 {
-                self.setActivationPolicyDebounced(.accessory) // Hide Dock icon again
+                self.hideDockIconDebounced()
             }
             self.systemSleep = false
             self.ble.resumeMonitoringAfterSystemWake()
@@ -1059,12 +1059,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         lastSystemSleepStartedAt = Date().timeIntervalSince1970
         cancelWakeRelatedTimers()
         ble.suspendMonitoringForSystemSleep()
-        // Set activation policy to regular, so the CBCentralManager can scan for peripherals
-        // when the Bluetooth will become on again.
-        // This enables Dock icon but the screen is off anyway.
-        // Cancel any pending debounced .accessory so it can't fire mid-sleep and undo this.
         activationPolicyWorkItem?.cancel()
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc func onUnlock() {
@@ -1126,11 +1122,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
 
     // MARK: - Dock icon activation policy
     //
-    // BLEUnlock cannot ship with LSUIElement=true (CBCentralManager.scanForPeripherals
-    // requires a .regular policy at first launch). Instead the app starts as .regular
-    // and switches to .accessory once initialization completes. On macOS 26 a single
-    // unbalanced setActivationPolicy can leave the Dock icon stuck visible. We debounce
-    // every transition and explicitly bracket UI that needs the foreground.
+    // BLEUnlock is a menu bar utility, so it must stay out of the Dock like other
+    // UIElement apps. Do not switch to .regular for temporary UI: that changes the
+    // process back into a foreground app and can leave the Dock icon stuck visible.
 
     private func activateApp() {
         if #available(macOS 14, *) {
@@ -1140,15 +1134,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         }
     }
 
-    private func setActivationPolicyDebounced(_ policy: NSApplication.ActivationPolicy) {
+    private func hideDockIconDebounced() {
         activationPolicyWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            NSApp.setActivationPolicy(policy)
-            if policy == .regular {
-                self?.activateApp()
-            } else {
-                NSApp.deactivate()
-            }
+        let workItem = DispatchWorkItem {
+            NSApp.setActivationPolicy(.accessory)
+            NSApp.deactivate()
         }
         activationPolicyWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
@@ -1157,14 +1147,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
     private func enterForegroundUI() {
         foregroundUIDepth += 1
         activationPolicyWorkItem?.cancel()
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         activateApp()
     }
 
     private func leaveForegroundUI() {
         foregroundUIDepth = max(0, foregroundUIDepth - 1)
         guard foregroundUIDepth == 0 else { return }
-        setActivationPolicyDebounced(.accessory)
+        hideDockIconDebounced()
     }
 
     func presentForegroundUI<T>(_ block: () -> T) -> T {
@@ -1751,13 +1741,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
             }
         }
 
-        // Hide dock icon.
-        // This is required because we can't have LSUIElement set to true in Info.plist,
-        // otherwise CBCentralManager.scanForPeripherals won't work.
-        // On macOS 26 a synchronous switch right at finishLaunching can race with
-        // window setup and leave the Dock icon stuck visible — use the debounced helper
-        // so it settles after the first runloop turn.
-        setActivationPolicyDebounced(.accessory)
+        hideDockIconDebounced()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
